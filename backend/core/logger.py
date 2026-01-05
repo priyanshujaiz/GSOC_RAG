@@ -3,8 +3,9 @@ from pathlib import Path
 
 from loguru import logger
 
-from .config import settings
+from backend.core.config import Settings
 
+settings = Settings()
 
 def setup_logging() -> None:
     logger.remove()
