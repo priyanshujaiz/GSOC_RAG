@@ -1,7 +1,5 @@
 # Core Framework
 pathway
-pathway[xpack-llm]
-pathway[xpack-llm-docs]
 
 # Web Framework
 fastapi>=0.109.0,<0.110.0

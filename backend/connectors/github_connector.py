@@ -49,13 +49,16 @@ class GitHubConnector(pw.io.python.ConnectorSubject):
             lookback_hours: On first run, fetch events from this many hours ago
         """
         super().__init__()
-        
+    
         self.repositories = repositories
         self.poll_interval = poll_interval or settings.GITHUB_POLL_INTERVAL
         self.lookback_hours = lookback_hours
         
         # Track last fetch time per repository
         self._last_fetch_times: dict[str, datetime] = {}
+        
+        # Track if this is the first fetch for each repo (for initial backfill)
+        self._is_first_fetch: dict[str, bool] = {repo: True for repo in repositories}
         
         # Initialize GitHub client
         self.client = GitHubClient()
@@ -177,13 +180,22 @@ class GitHubConnector(pw.io.python.ConnectorSubject):
         Returns:
             List of events
         """
-        logger.debug(f"Fetching events for {repo}")
+        is_first = self._is_first_fetch.get(repo, False)
+    
+        if is_first:
+            logger.info(f"First fetch for {repo} - backfilling recent data")
+        else:
+            logger.debug(f"Incremental fetch for {repo}")
         
         # Parse repository URL
         owner, name = parse_repository_url(repo)
         
         # Get last fetch time
-        since = self._last_fetch_times.get(repo)
+        last_fetch = self._last_fetch_times.get(repo)
+        
+        # On first fetch, pass None as 'since' to get all recent events
+        # On subsequent fetches, pass the last fetch time to filter
+        since = None if is_first else last_fetch
         
         # Build query variables
         variables = build_query_variables(owner, name, since=since)
@@ -195,13 +207,15 @@ class GitHubConnector(pw.io.python.ConnectorSubject):
         )
         
         # Transform events
+        # On first fetch: don't filter by time (get all recent)
+        # On subsequent: filter to only get new events
         events = self.transformer.extract_events_from_response(
             response_data,
             repo,
-            since=since
+            since=since  # Pass None on first fetch, time on subsequent
         )
         
-        # Update last fetch time
+        # Update state
         if events:
             # Use the latest event timestamp
             latest_timestamp = max(
@@ -210,17 +224,25 @@ class GitHubConnector(pw.io.python.ConnectorSubject):
             )
             self._last_fetch_times[repo] = latest_timestamp
             
+            # Mark first fetch as complete
+            if is_first:
+                self._is_first_fetch[repo] = False
+            
             logger.info(
-                f"Fetched {len(events)} events from {repo}",
+                f"Fetched {len(events)} events from {repo} ({'initial backfill' if is_first else 'incremental'})",
                 extra={
                     "repo": repo,
                     "event_count": len(events),
                     "latest_timestamp": latest_timestamp.isoformat(),
+                    "is_first_fetch": is_first,
                 }
             )
         else:
-            # No new events, but update fetch time to now
+            # No events, but update fetch time to now and mark as fetched
             self._last_fetch_times[repo] = datetime.utcnow()
+            if is_first:
+                self._is_first_fetch[repo] = False
+                logger.info(f"First fetch for {repo} complete - no recent events found")
         
         return events
 
