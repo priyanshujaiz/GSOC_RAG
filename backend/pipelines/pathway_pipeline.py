@@ -10,6 +10,13 @@ from backend.core.logger import get_logger
 from backend.core.config import Settings
 from backend.pipelines.temporal_windows import create_temporal_analysis
 from backend.pipelines.activity_scoring import ActivityScorer, calculate_windowed_scores
+from backend.pipelines.velocity_calculator import add_velocity_metrics
+from backend.pipelines.trend_detector import detect_activity_trends
+from backend.pipelines.contributor_analytics import add_contributor_metrics
+from backend.pipelines.summary_generator import (
+    generate_repository_summaries,
+    create_top_n_ranking
+)
 
 logger = get_logger(__name__)
 settings = Settings()
@@ -65,6 +72,21 @@ class GitHubPipeline:
 
         windowed_scored = calculate_windowed_scores(temporal_tables)
         
+        velocity_tables = add_velocity_metrics(windowed_scored)
+
+        trend_tables = detect_activity_trends(velocity_tables)
+
+        contributor_tables = add_contributor_metrics(processed_events, self.repos_table)
+
+        # Stage 10: Summary generation (DAY 5 - NEW!)
+        # Generate summaries for short-term trends (most relevant)
+        summaries_short = generate_repository_summaries(trend_tables['trends_short_term'])
+        summaries_medium = generate_repository_summaries(trend_tables['trends_medium_term'])
+        
+        # Stage 11: Top-10 ranking (DAY 5 - NEW!)
+        top_repos_short = create_top_n_ranking(summaries_short, n=10)
+        top_repos_medium = create_top_n_ranking(summaries_medium, n=10)
+
         logger.info("Pipeline built successfully with temporal analysis")
         
         return {
@@ -78,6 +100,14 @@ class GitHubPipeline:
             'metrics': self.metrics_table,
             **temporal_tables,
             **windowed_scored,
+            **velocity_tables,
+            **trend_tables,
+            **contributor_tables,
+
+            'summaries_short': summaries_short,
+            'summaries_medium': summaries_medium,
+            'top_10_short': top_repos_short,
+            'top_10_medium': top_repos_medium,
         }
 
     def _filter_by_type(self, events: pw.Table) -> dict[str, pw.Table]:
